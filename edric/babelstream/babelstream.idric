@@ -1,0 +1,69 @@
+module BabelStream
+
+%default total
+
+pair_map : (a → b → c) → List a → List b → List c
+pair_map _ [] _ = []
+pair_map _ _ [] = []
+pair_map f (x :: xs) (y :: ys) = f x y :: pair_map f xs ys
+
+copy_values : List a → List a
+copy_values = map id
+
+scale_values : Num a ⇒ a → List a → List a
+scale_values scalar = map (scalar *)
+
+add_values : Num a ⇒ List a → List a → List a
+add_values = pair_map (+)
+
+triad_values : Num a ⇒ a → List a → List a → List a
+triad_values scalar b c = pair_map (+) b (map (scalar *) c)
+
+dot_values : Num a ⇒ List a → List a → a
+dot_values a b = foldl (+) 0 (pair_map (*) a b)
+
+nstream_values : Num a ⇒ a → List a → List a → List a → List a
+nstream_values scalar a b c =
+  pair_map (+) a (pair_map (+) b (map (scalar *) c))
+
+f32_start_scalar : Float
+f32_start_scalar = 0.4
+
+f32_copy : List Float → List Float
+f32_copy = copy_values
+
+f32_mul : List Float → List Float
+f32_mul = scale_values f32_start_scalar
+
+f32_add : List Float → List Float → List Float
+f32_add = add_values
+
+f32_triad : List Float → List Float → List Float
+f32_triad = triad_values f32_start_scalar
+
+f32_nstream : List Float → List Float → List Float → List Float
+f32_nstream = nstream_values f32_start_scalar
+
+f32_dot : List Float → List Float → Float
+f32_dot = dot_values
+
+f64_start_scalar : Double
+f64_start_scalar = 0.4
+
+f64_copy : List Double → List Double
+f64_copy = copy_values
+
+f64_mul : List Double → List Double
+f64_mul = scale_values f64_start_scalar
+
+f64_add : List Double → List Double → List Double
+f64_add = add_values
+
+f64_triad : List Double → List Double → List Double
+f64_triad = triad_values f64_start_scalar
+
+f64_nstream : List Double → List Double → List Double → List Double
+f64_nstream = nstream_values f64_start_scalar
+
+f64_dot : List Double → List Double → Double
+f64_dot = dot_values
