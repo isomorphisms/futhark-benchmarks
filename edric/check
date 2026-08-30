@@ -32,8 +32,12 @@ esac
 
 compiler="$edric_root/build/exec/idris2"
 IDRIS2_PATH="$edric_root/libs/prelude/build/ttc:$edric_root/libs/base/build/ttc:$edric_root/libs/linear/build/ttc:$edric_root/libs/network/build/ttc"
+IDRIS2_DATA="$edric_root/support"
+IDRIS2_LIBS="$edric_root/support/c"
+LD_LIBRARY_PATH="$edric_root/support/c${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+DYLD_LIBRARY_PATH="$edric_root/support/c${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
 PATH="$edric_root/.tools/bin:$PATH"
-export IDRIS2_PATH PATH
+export IDRIS2_PATH IDRIS2_DATA IDRIS2_LIBS LD_LIBRARY_PATH DYLD_LIBRARY_PATH PATH
 
 cd "$repo_root"
 mkdir -p build

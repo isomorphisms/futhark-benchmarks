@@ -70,6 +70,10 @@ FUTHARK=/path/to/futhark \
 sh edric/check
 ```
 
+`EDRIC_ROOT` is a built source checkout; the checker supplies its local data
+and support-library paths, so no separate user-level Idriç installation is
+part of the result.
+
 The check:
 
 1. compile-checks the array and both port modules;
