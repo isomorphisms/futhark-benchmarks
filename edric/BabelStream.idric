@@ -1,0 +1,64 @@
+module BabelStream
+
+import ContiguousArray
+
+%default total
+
+f32_start_scalar : Float
+f32_start_scalar = 0.4
+
+scale_cell : Float → Float
+scale_cell value = f32_start_scalar * value
+
+triad_cell : Float → Float → Float
+triad_cell b c = b + f32_start_scalar * c
+
+nstream_cell : Float → Float → Float → Float
+nstream_cell a b c = a + (b + f32_start_scalar * c)
+
+export
+f32_copy :
+  {shape : Shape} →
+  Array shape Float →
+  IO (Either array_error (Array shape Float))
+f32_copy = map_f32 id
+
+export
+f32_mul :
+  {shape : Shape} →
+  Array shape Float →
+  IO (Either array_error (Array shape Float))
+f32_mul = map_f32 scale_cell
+
+export
+f32_add :
+  {shape : Shape} →
+  Array shape Float →
+  Array shape Float →
+  IO (Either array_error (Array shape Float))
+f32_add = zip_with_f32 (+)
+
+export
+f32_triad :
+  {shape : Shape} →
+  Array shape Float →
+  Array shape Float →
+  IO (Either array_error (Array shape Float))
+f32_triad = zip_with_f32 triad_cell
+
+export
+f32_nstream :
+  {shape : Shape} →
+  Array shape Float →
+  Array shape Float →
+  Array shape Float →
+  IO (Either array_error (Array shape Float))
+f32_nstream = zip_with3_f32 nstream_cell
+
+export
+f32_dot :
+  {shape : Shape} →
+  Array shape Float →
+  Array shape Float →
+  IO Float
+f32_dot = fold_zip_f32 (+) (*) 0

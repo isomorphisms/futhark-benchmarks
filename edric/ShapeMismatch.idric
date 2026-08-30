@@ -1,0 +1,14 @@
+module ShapeMismatch
+
+import ContiguousArray
+
+%default total
+
+||| This file is expected not to type-check.  It is the static half of the
+||| equal-shape regression: unlike the old `pair_map`, `zip_with_f32` cannot
+||| truncate arrays of different shapes.
+bad_add :
+  Array [2] Float →
+  Array [3] Float →
+  IO (Either array_error (Array [2] Float))
+bad_add left right = zip_with_f32 (+) left right

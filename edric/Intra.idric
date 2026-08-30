@@ -1,0 +1,20 @@
+module Intra
+
+import ContiguousArray
+
+%default total
+
+||| Direct shape-preserving translation of
+||| `map (scan (+) 0 >-> f32.sum)` for the fixture's fixed row width.
+|||
+||| Scan and row reduction remain two explicit semantic phases.  A later
+||| compiler pass may fuse them; this source does not pre-empt that decision.
+export
+scan_reduce :
+  {rows : Nat} →
+  Array [rows, 6] Float →
+  IO (Either array_error (Array [rows] Float))
+scan_reduce input = do
+  Right scanned <- scan_rows_f32 (+) 0 input
+    | Left error => pure (Left error)
+  reduce_rows_f32 (+) 0 scanned

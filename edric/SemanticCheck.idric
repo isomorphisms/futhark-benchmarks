@@ -1,0 +1,101 @@
+module SemanticCheck
+
+import BabelStream
+import ContiguousArray
+import Intra
+
+%default total
+
+describe_array_error : array_error → String
+describe_array_error (byte_count_overflow bytes) =
+  "byte_count_overflow(" ++ show bytes ++ ")"
+describe_array_error (allocation_failed cells) =
+  "allocation_failed(" ++ show cells ++ ")"
+describe_array_error (wrong_value_count expected actual) =
+  "wrong_value_count(" ++ show expected ++ "," ++ show actual ++ ")"
+
+show_f32 : Float → String
+show_f32 value = show (prim__cast_FloatDouble value)
+
+show_f32_values : List Float → String
+show_f32_values [] = "[]"
+show_f32_values (value :: values) =
+  "[" ++ show_f32 value ++ show_tail values
+  where
+    show_tail : List Float → String
+    show_tail [] = "]"
+    show_tail (next :: rest) = ", " ++ show_f32 next ++ show_tail rest
+
+print_array :
+  {shape : Shape} →
+  String →
+  Either array_error (Array shape Float) →
+  IO ()
+print_array label (Left error) =
+  putStrLn (label ++ " ERROR " ++ describe_array_error error)
+print_array label (Right values) = do
+  materialised <- to_f32_list values
+  putStrLn (label ++ " " ++ show_f32_values materialised)
+
+print_array_action :
+  {shape : Shape} →
+  String →
+  IO (Either array_error (Array shape Float)) →
+  IO ()
+print_array_action label action = do
+  result <- action
+  print_array label result
+
+babel_values_a : List Float
+babel_values_a = [1.0, -2.0, 16777216.0, 0.1, -0.0, 3.5]
+
+babel_values_b : List Float
+babel_values_b = [5.0, 4.0, 1.0, -0.2, 2.0, -7.25]
+
+babel_values_c : List Float
+babel_values_c = [0.5, -3.0, 2.0, 0.3, -4.0, 8.0]
+
+run_babelstream : IO ()
+run_babelstream = do
+  Right a <- from_f32_list [6] babel_values_a
+    | Left error => putStrLn ("setup_a ERROR " ++ describe_array_error error)
+  Right b <- from_f32_list [6] babel_values_b
+    | Left error => putStrLn ("setup_b ERROR " ++ describe_array_error error)
+  Right c <- from_f32_list [6] babel_values_c
+    | Left error => putStrLn ("setup_c ERROR " ++ describe_array_error error)
+
+  print_array_action "f32_copy" (f32_copy a)
+  print_array_action "f32_mul" (f32_mul c)
+  print_array_action "f32_add" (f32_add a b)
+  print_array_action "f32_triad" (f32_triad b c)
+  print_array_action "f32_nstream" (f32_nstream a b c)
+
+  dot <- f32_dot a b
+  putStrLn ("f32_dot " ++ show_f32 dot)
+
+  case same_shape (WithShape [6] a) (WithShape [6] b) of
+    Right _ => putStrLn "equal_shape accepted"
+    Left _ => putStrLn "equal_shape ERROR"
+
+  Right short <- from_f32_list [2] [1.0, 2.0]
+    | Left error => putStrLn ("setup_short ERROR " ++ describe_array_error error)
+  case same_shape (WithShape [6] a) (WithShape [2] short) of
+    Left _ => putStrLn "unequal_shape refused"
+    Right _ => putStrLn "unequal_shape ERROR"
+
+  wrong_count <- from_f32_list [3] [1.0, 2.0]
+  case wrong_count of
+    Left (wrong_value_count 3 2) => putStrLn "wrong_value_count refused"
+    Left _ => putStrLn "wrong_value_count WRONG_ERROR"
+    Right _ => putStrLn "wrong_value_count ERROR"
+
+run_intra : IO ()
+run_intra = do
+  Right rows <- from_f32_list [2, 6] (babel_values_a ++ babel_values_b)
+    | Left error => putStrLn ("setup_intra ERROR " ++ describe_array_error error)
+  print_array_action "scan_reduce" (scan_reduce rows)
+
+main : IO ()
+main = do
+  run_babelstream
+  run_intra
