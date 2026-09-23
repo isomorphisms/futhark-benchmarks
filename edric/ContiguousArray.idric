@@ -1,0 +1,302 @@
+module ContiguousArray
+
+import Data.Buffer
+import Data.Either
+import Data.Fin
+import Data.List
+import Decidable.Equality
+
+%default total
+
+||| A row-major array shape.  Each entry is the extent of one axis.
+public export
+Shape : Type
+Shape = List Nat
+
+||| Number of scalar cells in a shape.  The empty shape is one scalar cell.
+public export
+cell_count : Shape → Nat
+cell_count [] = 1
+cell_count (axis :: axes) = axis * cell_count axes
+
+||| Failures at the checked construction/storage boundary.
+public export
+choice array_error one_of
+  byte_count_overflow Nat
+  allocation_failed Nat
+  wrong_value_count Nat Nat
+
+||| Contiguous storage indexed by its full row-major shape and scalar type.
+|||
+||| The constructor is deliberately not public: every exported constructor
+||| checks the byte count and, where values are supplied, their exact count.
+export
+record Array (shape : Shape) (element : Type) where
+  constructor MkArray
+  storage : Buffer
+
+||| A runtime-discovered shape packaged with the array whose type it indexes.
+public export
+record RuntimeArray element where
+  constructor WithShape
+  shape : Shape
+  array : Array shape element
+
+public export
+choice shape_error one_of
+  unequal_shapes Shape Shape
+
+||| Turn two runtime-shaped arrays into arrays sharing one type-level shape.
+||| Kernels can only be called after this check succeeds.
+export
+same_shape :
+  RuntimeArray left →
+  RuntimeArray right →
+  Either shape_error (shape : Shape ** (Array shape left, Array shape right))
+same_shape (WithShape left_shape left) (WithShape right_shape right) =
+  case decEq left_shape right_shape of
+    Yes Refl => Right (left_shape ** (left, right))
+    No _ => Left (unequal_shapes left_shape right_shape)
+
+f32_bytes : Nat
+f32_bytes = 4
+
+checked_byte_count : Shape → Either array_error Int
+checked_byte_count shape =
+  let bytes = f32_bytes * cell_count shape
+      machine_bytes : Int = cast bytes
+  in if machine_bytes < 0
+        then Left (byte_count_overflow bytes)
+        else if cast machine_bytes == bytes
+                then Right machine_bytes
+                else Left (byte_count_overflow bytes)
+
+%foreign "scheme:(lambda (buffer offset value) (bytevector-ieee-single-native-set! buffer offset value))"
+prim__set_f32 : Buffer → Int → Double → PrimIO ()
+
+%foreign "scheme:(lambda (buffer offset) (blodwen-float32 (bytevector-ieee-single-native-ref buffer offset)))"
+prim__get_f32 : Buffer → Int → PrimIO Double
+
+set_f32 : HasIO io ⇒ Buffer → Int → Float → io ()
+set_f32 buffer cell value =
+  primIO (prim__set_f32 buffer
+                         (f32_bytes_as_int * cell)
+                         (prim__cast_FloatDouble value))
+  where
+    f32_bytes_as_int : Int
+    f32_bytes_as_int = 4
+
+get_f32 : HasIO io ⇒ Buffer → Int → io Float
+get_f32 buffer cell =
+  do value <- primIO (prim__get_f32 buffer (f32_bytes_as_int * cell))
+     pure (prim__cast_DoubleFloat value)
+  where
+    f32_bytes_as_int : Int
+    f32_bytes_as_int = 4
+
+allocate_f32 : (shape : Shape) → IO (Either array_error (Array shape Float))
+allocate_f32 shape =
+  case checked_byte_count shape of
+    Left error => pure (Left error)
+    Right bytes => do
+      Just buffer <- newBuffer bytes
+        | Nothing => pure (Left (allocation_failed (cell_count shape)))
+      pure (Right (MkArray buffer))
+
+fill_from_list : Buffer → Int → List Float → IO ()
+fill_from_list _ _ [] = pure ()
+fill_from_list buffer cell (value :: values) = do
+  set_f32 buffer cell value
+  fill_from_list buffer (cell + 1) values
+
+||| Construct an f32 array from literal/interchange values.  `List` is used
+||| only at this checked edge; it is not the array's storage carrier.
+export
+from_f32_list :
+  (shape : Shape) →
+  List Float →
+  IO (Either array_error (Array shape Float))
+from_f32_list shape values =
+  let expected = cell_count shape
+      actual = length values
+  in if actual == expected
+        then do
+          Right (MkArray buffer) <- allocate_f32 shape
+            | Left error => pure (Left error)
+          fill_from_list buffer 0 values
+          pure (Right (MkArray buffer))
+        else pure (Left (wrong_value_count expected actual))
+
+read_to_list : Buffer → Nat → Int → List Float → IO (List Float)
+read_to_list _ Z _ values = pure (reverse values)
+read_to_list buffer (S remaining) cell values = do
+  value <- get_f32 buffer cell
+  read_to_list buffer remaining (cell + 1) (value :: values)
+
+||| Materialise values for diagnostics and fixture comparison only.
+export
+to_f32_list : {shape : Shape} → Array shape Float → IO (List Float)
+to_f32_list {shape} (MkArray buffer) =
+  read_to_list buffer (cell_count shape) 0 []
+
+map_cells :
+  (Float → Float) → Buffer → Buffer → Nat → Int → IO ()
+map_cells _ _ _ Z _ = pure ()
+map_cells operation input output (S remaining) cell = do
+  value <- get_f32 input cell
+  set_f32 output cell (operation value)
+  map_cells operation input output remaining (cell + 1)
+
+export
+map_f32 :
+  {shape : Shape} →
+  (Float → Float) →
+  Array shape Float →
+  IO (Either array_error (Array shape Float))
+map_f32 {shape} operation (MkArray input) = do
+  Right (MkArray output) <- allocate_f32 shape
+    | Left error => pure (Left error)
+  map_cells operation input output (cell_count shape) 0
+  pure (Right (MkArray output))
+
+zip_cells :
+  (Float → Float → Float) →
+  Buffer → Buffer → Buffer → Nat → Int → IO ()
+zip_cells _ _ _ _ Z _ = pure ()
+zip_cells operation left right output (S remaining) cell = do
+  left_value <- get_f32 left cell
+  right_value <- get_f32 right cell
+  set_f32 output cell (operation left_value right_value)
+  zip_cells operation left right output remaining (cell + 1)
+
+||| Equal shape is an input type invariant; there is no truncating case.
+export
+zip_with_f32 :
+  {shape : Shape} →
+  (Float → Float → Float) →
+  Array shape Float →
+  Array shape Float →
+  IO (Either array_error (Array shape Float))
+zip_with_f32 {shape} operation (MkArray left) (MkArray right) = do
+  Right (MkArray output) <- allocate_f32 shape
+    | Left error => pure (Left error)
+  zip_cells operation left right output (cell_count shape) 0
+  pure (Right (MkArray output))
+
+zip3_cells :
+  (Float → Float → Float → Float) →
+  Buffer → Buffer → Buffer → Buffer → Nat → Int → IO ()
+zip3_cells _ _ _ _ _ Z _ = pure ()
+zip3_cells operation first second third output (S remaining) cell = do
+  first_value <- get_f32 first cell
+  second_value <- get_f32 second cell
+  third_value <- get_f32 third cell
+  set_f32 output cell (operation first_value second_value third_value)
+  zip3_cells operation first second third output remaining (cell + 1)
+
+export
+zip_with3_f32 :
+  {shape : Shape} →
+  (Float → Float → Float → Float) →
+  Array shape Float →
+  Array shape Float →
+  Array shape Float →
+  IO (Either array_error (Array shape Float))
+zip_with3_f32 {shape} operation
+              (MkArray first) (MkArray second) (MkArray third) = do
+  Right (MkArray output) <- allocate_f32 shape
+    | Left error => pure (Left error)
+  zip3_cells operation first second third output (cell_count shape) 0
+  pure (Right (MkArray output))
+
+fold_pairs :
+  (Float → Float → Float) →
+  (Float → Float → Float) →
+  Buffer → Buffer → Nat → Int → Float → IO Float
+fold_pairs _ _ _ _ Z _ accumulator = pure accumulator
+fold_pairs combine pair_operation left right (S remaining) cell accumulator = do
+  left_value <- get_f32 left cell
+  right_value <- get_f32 right cell
+  let next = combine accumulator (pair_operation left_value right_value)
+  fold_pairs combine pair_operation left right remaining (cell + 1) next
+
+||| Deterministic left-to-right row-major fold over equal-shaped arrays.
+export
+fold_zip_f32 :
+  {shape : Shape} →
+  (Float → Float → Float) →
+  (Float → Float → Float) →
+  Float →
+  Array shape Float →
+  Array shape Float →
+  IO Float
+fold_zip_f32 {shape} combine pair_operation initial
+             (MkArray left) (MkArray right) =
+  fold_pairs combine pair_operation left right (cell_count shape) 0 initial
+
+scan_one_row :
+  (Float → Float → Float) →
+  Buffer → Buffer → Nat → Int → Float → IO Int
+scan_one_row _ _ _ Z cell _ = pure cell
+scan_one_row operation input output (S remaining) cell accumulator = do
+  value <- get_f32 input cell
+  let next = operation accumulator value
+  set_f32 output cell next
+  scan_one_row operation input output remaining (cell + 1) next
+
+scan_rows :
+  (Float → Float → Float) →
+  Float → Buffer → Buffer → Nat → Nat → Int → IO ()
+scan_rows _ _ _ _ Z _ _ = pure ()
+scan_rows operation initial input output (S remaining_rows) columns cell = do
+  next_cell <- scan_one_row operation input output columns cell initial
+  scan_rows operation initial input output remaining_rows columns next_cell
+
+||| Inclusive scan of every row in a row-major rank-two array.
+export
+scan_rows_f32 :
+  {rows, columns : Nat} →
+  (Float → Float → Float) →
+  Float →
+  Array [rows, columns] Float →
+  IO (Either array_error (Array [rows, columns] Float))
+scan_rows_f32 {rows} {columns} operation initial (MkArray input) = do
+  Right (MkArray output) <- allocate_f32 [rows, columns]
+    | Left error => pure (Left error)
+  scan_rows operation initial input output rows columns 0
+  pure (Right (MkArray output))
+
+reduce_one_row :
+  (Float → Float → Float) →
+  Buffer → Nat → Int → Float → IO (Float, Int)
+reduce_one_row _ _ Z cell accumulator = pure (accumulator, cell)
+reduce_one_row operation input (S remaining) cell accumulator = do
+  value <- get_f32 input cell
+  reduce_one_row operation input remaining (cell + 1)
+                 (operation accumulator value)
+
+reduce_rows :
+  (Float → Float → Float) →
+  Float → Buffer → Buffer → Nat → Nat → Int → Int → IO ()
+reduce_rows _ _ _ _ Z _ _ _ = pure ()
+reduce_rows operation initial input output
+            (S remaining_rows) columns input_cell output_cell = do
+  (accumulator, next_input_cell) <-
+    reduce_one_row operation input columns input_cell initial
+  set_f32 output output_cell accumulator
+  reduce_rows operation initial input output
+              remaining_rows columns next_input_cell (output_cell + 1)
+
+||| Left-to-right reduction of every row in a row-major rank-two array.
+export
+reduce_rows_f32 :
+  {rows, columns : Nat} →
+  (Float → Float → Float) →
+  Float →
+  Array [rows, columns] Float →
+  IO (Either array_error (Array [rows] Float))
+reduce_rows_f32 {rows} {columns} operation initial (MkArray input) = do
+  Right (MkArray output) <- allocate_f32 [rows]
+    | Left error => pure (Left error)
+  reduce_rows operation initial input output rows columns 0 0
+  pure (Right (MkArray output))

@@ -1,0 +1,60 @@
+name: Edriç shape and f32 semantics
+
+on:
+  push:
+    branches:
+      - edric/micro-intra-port
+    paths:
+      - 'edric/**'
+      - 'babelstream/babelstream.fut'
+      - 'micro/intra.fut'
+      - '.github/workflows/edric-semantics.yml'
+  pull_request:
+    paths:
+      - 'edric/**'
+      - 'babelstream/babelstream.fut'
+      - 'micro/intra.fut'
+      - '.github/workflows/edric-semantics.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  compare-outputs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out benchmark sources
+        uses: actions/checkout@v4
+
+      - name: Check out pinned binary32 Idriç compiler
+        uses: actions/checkout@v4
+        with:
+          repository: isomorphisms/Idric
+          ref: 249921a30b9fc5b9e842dbb6489a4d8d231b6174
+          path: .tools/Idric-f32
+
+      - name: Install compiler host dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgmp-dev
+
+      - name: Bootstrap pinned Idriç compiler
+        working-directory: .tools/Idric-f32
+        run: JOBS=2 ./edric bootstrap
+
+      - name: Install pinned Futhark reference compiler
+        run: |
+          archive=.tools/futhark-0.27.1-linux-x86_64.tar.xz
+          curl --fail --location --retry 3 \
+            --output "$archive" \
+            https://github.com/diku-dk/futhark/releases/download/v0.27.1/futhark-0.27.1-linux-x86_64.tar.xz
+          printf '%s  %s\n' \
+            11248f098643487627f69695be29d96dee351a56d3f27f3715da7cf0638a0b8f \
+            "$archive" | sha256sum --check
+          tar --no-same-owner -xJf "$archive" -C .tools
+
+      - name: Compare checked shapes and binary32 outputs
+        env:
+          EDRIC_ROOT: ${{ github.workspace }}/.tools/Idric-f32
+          FUTHARK: ${{ github.workspace }}/.tools/futhark-0.27.1-linux-x86_64/bin/futhark
+        run: sh edric/check

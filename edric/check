@@ -1,0 +1,70 @@
+#!/bin/sh
+set -eu
+
+repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+edric_root=${EDRIC_ROOT:-}
+futhark=${FUTHARK:-futhark}
+pinned_edric=249921a30b9fc5b9e842dbb6489a4d8d231b6174
+
+fail() {
+  printf 'edric-check: %s\n' "$*" >&2
+  exit 1
+}
+
+[ "$edric_root" != '' ] ||
+  fail 'set EDRIC_ROOT to the Idriç checkout at the pinned f32 commit'
+[ -x "$edric_root/build/exec/idris2" ] ||
+  fail "built compiler not found: $edric_root/build/exec/idris2"
+
+actual_edric=$(git -C "$edric_root" rev-parse HEAD)
+[ "$actual_edric" = "$pinned_edric" ] ||
+  fail "expected Idriç $pinned_edric, found $actual_edric"
+
+command -v "$futhark" >/dev/null 2>&1 ||
+  fail "Futhark executable not found: $futhark"
+command -v python3 >/dev/null 2>&1 || fail 'python3 is required'
+
+futhark_version=$("$futhark" --version | sed -n '1p')
+case "$futhark_version" in
+  'Futhark 0.27.1.') ;;
+  *) fail "expected Futhark 0.27.1, found: $futhark_version" ;;
+esac
+
+compiler="$edric_root/build/exec/idris2"
+IDRIS2_PATH="$edric_root/libs/prelude/build/ttc:$edric_root/libs/base/build/ttc:$edric_root/libs/linear/build/ttc:$edric_root/libs/network/build/ttc"
+IDRIS2_DATA="$edric_root/support"
+IDRIS2_LIBS="$edric_root/support/c"
+LD_LIBRARY_PATH="$edric_root/support/c${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+DYLD_LIBRARY_PATH="$edric_root/support/c${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+PATH="$edric_root/.tools/bin:$PATH"
+export IDRIS2_PATH IDRIS2_DATA IDRIS2_LIBS LD_LIBRARY_PATH DYLD_LIBRARY_PATH PATH
+
+cd "$repo_root"
+mkdir -p build
+
+"$compiler" --source-dir edric --check edric/ContiguousArray.idric
+"$compiler" --source-dir edric --check edric/BabelStream.idric
+"$compiler" --source-dir edric --check edric/Intra.idric
+"$compiler" --source-dir edric --check edric/SemanticCheck.idric
+
+if mismatch_output=$("$compiler" --source-dir edric \
+     --check edric/ShapeMismatch.idric 2>&1); then
+  fail 'different static shapes unexpectedly type-checked'
+fi
+case "$mismatch_output" in
+  *"Array [3] Float"*"Array [2] Float"*) ;;
+  *)
+    printf '%s\n' "$mismatch_output" >&2
+    fail 'static shape refusal did not report the expected mismatched arrays'
+    ;;
+esac
+
+"$compiler" --source-dir edric --cg chez \
+  -o edric-semantic-check edric/SemanticCheck.idric
+"$futhark" c babelstream/babelstream.fut -o build/futhark-babelstream
+"$futhark" c micro/intra.fut -o build/futhark-intra
+
+python3 edric/compare_outputs.py \
+  --edric build/exec/edric-semantic-check \
+  --futhark-babelstream build/futhark-babelstream \
+  --futhark-intra build/futhark-intra
